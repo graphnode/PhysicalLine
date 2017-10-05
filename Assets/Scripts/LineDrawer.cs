@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Experimental.UIElements;
 
@@ -6,7 +7,7 @@ public class LineDrawer : MonoBehaviour
 {
     public LineRenderer Line;
 
-    private Vector3[] _positions = new Vector3[0];
+    private List<Vector3> _positions = new List<Vector3>();
 
     public void Start()
     {
@@ -35,21 +36,37 @@ public class LineDrawer : MonoBehaviour
     {
         Line.enabled = true;
 
-        _positions = new Vector3[2];
-
         var position = Camera.main.ScreenToWorldPoint(Input.mousePosition);
         position.z = 0;
 
-        _positions[0] = _positions[1] = position;
+        _positions = new List<Vector3> {position, position};
 
-        Line.positionCount = 2;
-        Line.SetPositions(_positions);
+        Line.positionCount = _positions.Count;
+        Line.SetPositions(_positions.ToArray());
     }
 
     private void MoveLine()
     {
+        if (_positions.Count > 2)
+        {
+            var currentSize = _positions.Count;
+            for (var i = 0; i < _positions.Count - 2; i++)
+            {
+                if (Physics2D.Linecast(_positions[i], _positions[i + 2]))
+                    continue;
 
-        var oldPosition = _positions[_positions.Length - 2];
+                _positions.RemoveAt(i + 1);
+                i--;
+            }
+
+            if (currentSize != _positions.Count)
+            {
+                Line.SetPositions(_positions.ToArray());
+                Line.positionCount = _positions.Count;
+            }
+        }
+
+        var oldPosition = _positions[_positions.Count - 2];
 
         var newPosition = Camera.main.ScreenToWorldPoint(Input.mousePosition);
         newPosition.z = 0;
@@ -58,24 +75,110 @@ public class LineDrawer : MonoBehaviour
 
         if (hit)
         {
-            Line.positionCount += 1;
-            Array.Resize(ref _positions, Line.positionCount);
-            _positions[_positions.Length - 2] = hit.collider.transform.position;
-            _positions[_positions.Length - 1] = newPosition;
+            Vector2 p1, p2;
+            if (FindTangents(hit.transform.position, 0.90f, oldPosition, out p1, out p2))
+            {
+                var hitPosition = Vector2.Distance(hit.point, p1) < Vector2.Distance(hit.point, p2) ? p1 : p2;
+                //Debug.DrawLine(oldPosition, hitPosition, Color.red, 5f, false);
+
+                _positions[_positions.Count - 1] = hitPosition;
+                _positions.Add(newPosition);
+                Line.positionCount = _positions.Count;
+            }
+            else if (FindTangents(hit.transform.position, 0.90f, newPosition, out p1, out p2))
+            {
+                var hitPosition = Vector2.Distance(hit.point, p1) < Vector2.Distance(hit.point, p2) ? p1 : p2;
+                //Debug.DrawLine(newPosition, hitPosition, Color.blue);
+
+                _positions[_positions.Count - 1] = hitPosition;
+                _positions.Add(newPosition);
+                Line.positionCount = _positions.Count;
+            }
         }
         else
         {
-            _positions[_positions.Length - 1] = newPosition;
+            _positions[_positions.Count - 1] = newPosition;
         }
 
-        Line.SetPositions(_positions);
+        Line.SetPositions(_positions.ToArray());
     }
 
     private void TerminateLine()
     {
-        _positions = new Vector3[0];
-        Line.positionCount = 0;
+        _positions.Clear();
+        Line.positionCount = _positions.Count;
 
         Line.enabled = false;
+    }
+
+    private bool FindTangents(Vector2 center, float radius, Vector2 externalPoint, out Vector2 pt1, out Vector2 pt2)
+    {
+        // Find the distance squared from the
+        // external point to the circle's center.
+        double dx = center.x - externalPoint.x;
+        double dy = center.y - externalPoint.y;
+        var dSquared = dx * dx + dy * dy;
+
+        if (dSquared < radius * radius)
+        {
+            pt1 = pt2 = new Vector2(float.NaN, float.NaN);
+            return false;
+        }
+
+        // Find the distance from the external point
+        // to the tangent points.
+        var l = Math.Sqrt(dSquared - radius * radius);
+
+        // Find the points of intersection between
+        // the original circle and the circle with
+        // center external_point and radius dist.
+        FindCircleCircleIntersections(center.x, center.y, radius, externalPoint.x, externalPoint.y, (float)l, out pt1, out pt2);
+
+        return true;
+    }
+
+    private int FindCircleCircleIntersections(float cx0, float cy0, float radius0, float cx1, float cy1, float radius1, out Vector2 intersection1, out Vector2 intersection2)
+    {
+        // Find the distance between the centers.
+        var dx = cx0 - cx1;
+        var dy = cy0 - cy1;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+
+        // See how many solutions there are.
+        if (dist > radius0 + radius1)
+        {
+            // No solutions, the circles are too far apart.
+            intersection1 = intersection2 = new Vector2(float.NaN, float.NaN);
+            return 0;
+        }
+
+        if (dist < Math.Abs(radius0 - radius1))
+        {
+            // No solutions, one circle contains the other.
+            intersection1 = intersection2 = new Vector2(float.NaN, float.NaN);
+            return 0;
+        }
+
+        if (dist == 0 && radius0 == radius1)
+        {
+            // No solutions, the circles coincide.
+            intersection1 = intersection2 = new Vector2(float.NaN, float.NaN);
+            return 0;
+        }
+        
+        // Find a and h.
+        var a = (radius0 * radius0 - radius1 * radius1 + dist * dist) / (2 * dist);
+        var h = Math.Sqrt(radius0 * radius0 - a * a);
+
+        // Find P2.
+        var cx2 = cx0 + a * (cx1 - cx0) / dist;
+        var cy2 = cy0 + a * (cy1 - cy0) / dist;
+
+        // Get the points P3.
+        intersection1 = new Vector2((float)(cx2 + h * (cy1 - cy0) / dist), (float)(cy2 - h * (cx1 - cx0) / dist));
+        intersection2 = new Vector2((float)(cx2 - h * (cy1 - cy0) / dist), (float)(cy2 + h * (cx1 - cx0) / dist));
+
+        // See if we have 1 or 2 solutions.
+        return dist == radius0 + radius1 ? 1 : 2;
     }
 }
